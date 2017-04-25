@@ -1,0 +1,565 @@
+
+\documentclass{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{float}
+\usepackage{subcaption}
+\usepackage{amssymb,amsmath,amsfonts}
+\usepackage[multiple]{footmisc}
+\usepackage[utf8]{inputenc}
+\usepackage{pdflscape}
+\usepackage{booktabs}
+\usepackage{ctable}
+\usepackage{thumbpdf}
+
+\begin{document}
+
+
+<<include=FALSE, results='hide'>>=
+  library("Hmisc")
+  library("ggplot2")
+  library("data.table")
+  library("tikzDevice");
+  options(prompt = "R> ", continue = "+  ", useFancyQuotes = FALSE)
+  require("knitr"); require("simcausal"); require("tikzDevice");
+  # options(tikzDefaultEngine='xetex')
+  opts_chunk$set(fig.path = 'figure/plot-',fig.align = 'center',fig.show = 'hold')
+  knit_hooks$set(pdfcrop = hook_pdfcrop)
+  # to crop white space in output figures:
+  # knit_hooks$set(pdfcrop = hook_pdfcrop)
+  options(width=90)  # make the printing fit on the page
+  # options(width=80)  # make the printing fit on the page
+  set.seed(1121)   # make the results repeatable
+  # est_levels = c("SDR", "DR Transform", "LTMLE", "GCOMP", "IPW")
+  est_levels = c("iTMLE", "DR Transform", "LTMLE", "Direct Plugin", "IPW")
+  scen_levels = c("Qc.gc", "Qi.gc", "Qc.gi", "Qi.gi", "QSDR.gSDR")
+
+  get_legend<-function(myggplot){
+    tmp <- ggplot_gtable(ggplot_build(myggplot))
+    leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+    legend <- tmp$grobs[[leg]]
+    return(legend)
+  }
+  # p <- ggplot(restab, aes(`Relative MSE`, Estimator))
+  # p + geom_point(aes(colour = Scenario, shape = Scenario), position = position_jitter(h = 0.1)) +
+  plotMSE <- function(restab, jitter = .1) {
+    ggplot(restab, aes(x = Scenario, y = `Relative MSE`)) +
+    # geom_point(aes(colour = Estimator, shape = Estimator), position = position_jitter(h = jitter)) +
+    geom_point(aes(colour = Estimator, shape = Estimator), position = position_dodge(jitter)) +
+    scale_colour_discrete(drop = FALSE) + scale_shape_discrete(drop = FALSE) +
+    scale_y_log10("Relative MSE", breaks = c(1, 2, 5, 10, 100)) +
+    # coord_flip() +
+    theme_bw()
+  }
+
+  plotBIAS <- function(restab, jitter = .2) {
+    ggplot(restab, aes(x = Scenario, y = `Relative Bias`)) +
+    # geom_point(aes(colour = Estimator, shape = Estimator), position = position_jitter(h = jitter)) +
+    geom_point(aes(colour = Estimator, shape = Estimator), position = position_dodge(jitter)) +
+    scale_colour_discrete(drop = FALSE) + scale_shape_discrete(drop = FALSE) +
+    scale_y_log10("Relative Absolute Bias") +
+    # coord_flip() +
+    theme_bw()
+  }
+
+  # p <- ggplot(restab, aes(`Coverage Probability`, Estimator))
+  # p + geom_point(aes(colour = Scenario, shape = Scenario), position = position_jitter(h = 0.15)) +
+  #     geom_vline(xintercept = 0.95) +
+  #     coord_flip() + theme_bw()
+  plotCI <- function(restab, jitter = .1, flip = TRUE) {
+    # setnames(restab,"Coverage prob.","Coverage Probability")
+    p <- ggplot(restab, aes(x = Scenario, `Coverage prob.`)) +
+    # geom_point(aes(colour = Estimator, shape = Estimator), position = position_jitter(h = jitter)) +
+    geom_point(aes(colour = Estimator, shape = Estimator), position = position_dodge(jitter)) +
+    scale_colour_discrete(drop = FALSE) + scale_shape_discrete(drop = FALSE) +
+    scale_y_continuous("Coverage Probability", breaks = c(.1, .3, .5, .7, .85, .95)) +
+    geom_hline(yintercept = 0.95)
+    if (flip) p <- p + coord_flip()
+    p + theme_bw()
+  }
+
+  plotCIlen <- function(restab, jitter = 0.35, flip = TRUE) {
+    ggplot(restab, aes(x = Scenario, y = y, ymin=ymin, ymax=ymax)) +
+    geom_point(aes(colour = Estimator, shape = Estimator), position = position_dodge(jitter)) +
+    geom_errorbar(aes(color = Estimator), alpha = 1, width = 0.3, size = 0.4, position = position_dodge(jitter)) +
+    scale_y_log10("Mean CI Length", breaks = c(.01, .1, 1)) +
+    scale_colour_discrete(drop = FALSE) +
+    scale_shape_discrete(drop = FALSE) +
+    # scale_linetype_discrete(drop = FALSE) +
+    theme_bw()
+    # +
+    # ylab("Mean CI Length")
+  }
+
+  genrestab <- function(restab, sim.name, est_levels, scen_levels) {
+    library("data.table")
+    scen.names <- rownames(restab)
+    restab <- data.table::data.table(restab, keep.rownames=TRUE)
+    restab[grep("ipw", scen.names), Estimator := "IPW"]
+    restab[grep("gcomp", scen.names), Estimator := "Direct Plugin"]
+    # restab[grep("br", scen.names), Estimator := "BR"]
+    restab[grep("tmle", scen.names), Estimator := "LTMLE"]
+    restab[grep("drtrans", scen.names), Estimator := "DR Transform"]
+    restab[grep("sdr", scen.names), Estimator := "iTMLE"]
+
+    restab[grep("Qc.gc", scen.names), Scenario := "Qc.gc"]
+    restab[grep("Qi.gc", scen.names), Scenario := "Qi.gc"]
+    restab[grep("Qc.gi", scen.names), Scenario := "Qc.gi"]
+    restab[grep("Qi.gi", scen.names), Scenario := "Qi.gi"]
+    restab[grep("QSDR.gSDR", scen.names), Scenario := "QSDR.gSDR"]
+    restab[, ("Estimator") := factor(restab[["Estimator"]], levels = est_levels)]
+    # restab[["Estimator"]] <- factor(restab[["Estimator"]], levels = est_levels)
+    # restab[["Estimator"]] <- factor(restab[["Estimator"]], levels = c("IPW", "GCOMP", "BR", "LTMLE", "DR Transform", "SDR"))
+    restab[, ("Scenario") := factor(restab[["Scenario"]], levels = scen_levels)]
+    # restab[["Scenario"]] <- factor(restab[["Scenario"]], levels = scen_levels)
+    restab[, ("sim") := sim.name]
+    return(restab)
+  }
+@
+
+\subsection{Proof-of-concept simulation. Simulation scenario 1 with 3 time-points.}
+
+<<simscen.stats.t3, message=FALSE, warning=FALSE, echo=TRUE>>=
+load("/Users/olegsofrygin/GoogleDrive/Alex_SDR/sims/sims_final_04_20_17/sim1_results_t2.Rd")
+print(results[["res_name"]])
+@
+
+<<ggplot.MSE.t3, fig.pos="H", out.width=".7\\linewidth", message=FALSE, warning=FALSE, echo=FALSE, fig.width=8,fig.height=4.5, fig.cap="Relative MSE for $\\hat{Q}_1$ in simulation scenario 1 with 3 time points.">>=
+load("/Users/olegsofrygin/GoogleDrive/Alex_SDR/sims/sims_final_04_20_17/sim1_results_t2.Rd")
+restab <- results[["results_MSE"]]
+rownames(restab) <- unlist(strsplit(rownames(restab), "_mse"))
+restabMSE.t3 <- genrestab(restab, "Simulation 1", est_levels, scen_levels)
+pMSEt3 <- plotMSE(restabMSE.t3) + ylab("simulation scenario 1")
+pMSEt3
+@
+
+<<ggplot.bias.t3, fig.pos="H", out.width=".7\\linewidth", message=FALSE, warning=FALSE, echo=FALSE, fig.width=8,fig.height=4.5, fig.cap="Relative absolute bias for $\\hat{Q}_0$ in simulation scenario 1 with 3 time points.">>=
+load("/Users/olegsofrygin/GoogleDrive/Alex_SDR/sims/sims_final_04_20_17/sim1_results_t2.Rd")
+restab <- results[["results_bias"]]
+rownames(restab) <- unlist(strsplit(rownames(restab), "_bias"))
+restabBIAS.t3 <- genrestab(restab, "Simulation 1", est_levels, scen_levels)
+pbiast3 <- plotBIAS(restabBIAS.t3) + ylab("simulation scenario 1")
+pbiast3
+@
+
+% out.height = ".5\\linewidth",
+<<ggplot.CIcov.CIlen.t3, fig.pos="H", out.width=".9\\linewidth", pdfcrop=TRUE, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Coverage (left panel) and mean length (right panel) of the two-sided 95\\% CIs for $Q_0$ in simulation scenario 1.">>=
+  load("/Users/olegsofrygin/GoogleDrive/Alex_SDR/sims/sims_final_04_20_17/sim1_results_t2.Rd")
+  restab <- results[["results_cov"]]
+  rownames(restab) <- unlist(strsplit(rownames(restab), "_cover"))
+  restabCIcov.t3 <- genrestab(restab, "Simulation 1", est_levels, scen_levels)
+  restabCIcov.t3 <- restabCIcov.t3[Estimator!= "Direct Plugin"]
+  pCIt3 <- plotCI(restabCIcov.t3, jitter =.25, flip = TRUE)
+  # pCIt3
+
+  load("/Users/olegsofrygin/GoogleDrive/Alex_SDR/sims/sims_final_04_20_17/sim1_results_t2.Rd")
+  library("Hmisc")
+  library("ggplot2")
+  library("data.table")
+  library("gridExtra")
+  restab <- results[["results_CIlen"]]
+  rownames(restab) <- unlist(strsplit(rownames(restab), "_CIlen"))
+  restabCIlen.t3 <- genrestab(restab, "Simulation 1", est_levels, scen_levels)
+  restabCIlen.t3 <- restabCIlen.t3[Estimator!= "Direct Plugin"]
+  restabCIlen.t3[, ("y") := 0]
+  # restabCIlen.t3[, ("ymin") := -`Mean CI length` / 2]
+  # restabCIlen.t3[, ("ymax") := +`Mean CI length` / 2]
+  restabCIlen.t3[, ("ymin") := 0]
+  restabCIlen.t3[, ("ymax") := `Mean CI length`]
+  pCIlent3 <- plotCIlen(restabCIlen.t3) + xlab("simulation scenario 1")
+  # pCIlent3
+
+  pCIlent3 <- pCIlent3 + theme(legend.position = "top")
+  legend.save <- get_legend(pCIlent3)
+  pCIt3 <- pCIt3 + theme(legend.position = "none", axis.title.x = element_text(size = 8), axis.title.y = element_blank())
+  pCIlent3 <- pCIlent3 + theme(legend.position = "none", axis.title.x = element_text(size = 8), axis.title.y = element_blank(), axis.text.y = element_blank()) + coord_flip()
+  grid.arrange(legend.save, pCIt3, pCIlent3,
+                nrow = 2, ncol = 2,
+                layout_matrix = rbind(c(1,1), c(2,3)),
+                widths = c(0.55,0.45),
+                heights = unit(c(0.5, 10), "cm")
+                # heights = c(0.005, 0.1)
+                )
+@
+
+<<ggplot.all.t3, fig.pos="H", message=FALSE, warning=FALSE, echo=FALSE,fig.cap="Simulation scenario 1 results. Top to bottom: MSE for estimation of $Q_1$, bias for estimation of $Q_0$ and 95\\% CI coverage for estimation of $Q_0$, over 3 time points and $n$=500.">>=
+
+  new_theme <- theme( # axis.title.x = element_blank(),
+                     axis.title.y = element_text(size = 8),
+                     axis.title.x = element_text(size = 8),
+                     plot.margin = unit(c(0, 0, 0.5, 0), "lines"),
+                     legend.position="top")
+  pMSEt3 <- pMSEt3 + new_theme
+  pbiast3 <- pbiast3 + new_theme
+  pCIt3 <- pCIt3 + new_theme
+
+  legend.save <- get_legend(pMSEt3)
+  pMSEt3 <- pMSEt3 + theme(legend.position = "none")
+  pbiast3 <- pbiast3 + theme(legend.position = "none")
+  pCIt3 <- pCIt3 + theme(legend.position = "none")
+@
+
+\clearpage
+
+<<chunk.bias.t3, message=FALSE, warning=FALSE, echo=FALSE, results="asis">>=
+load("/Users/olegsofrygin/GoogleDrive/Alex_SDR/sims/sims_final_04_20_17/sim1_results_t2.Rd")
+library("Hmisc")
+restab <- results[["results_bias"]]
+rownames(restab) <- unlist(strsplit(rownames(restab), "_bias"))
+cat("\n")
+latex(restab, file = "", where = "H", caption.loc = 'bottom',
+  caption = "Simulation scenario 1. Relative absolute bias for estimation of $Q_0$, over 3 time points and $n$=500.",
+  label = 'tab1',booktabs = TRUE,landscape = FALSE,
+  #rowname = NULL,
+  col.just = c("l", "r"), size = "tiny")
+@
+
+<<chunk.MSE.t3, message=FALSE, warning=FALSE, echo=FALSE, results="asis">>=
+load("/Users/olegsofrygin/GoogleDrive/Alex_SDR/sims/sims_final_04_20_17/sim1_results_t2.Rd")
+library("Hmisc")
+restab <- results[["results_MSE"]]
+rownames(restab) <- unlist(strsplit(rownames(restab), "_mse"))
+cat("\n")
+latex(restab, file = "", where = "H", caption.loc = 'bottom',
+  caption = "Simulation scenario 1. Relative MSE for estimation of $Q_1$, over 3 time points and $n$=500.",
+  label = 'tab2',booktabs = TRUE,landscape = FALSE,
+  #rowname = NULL,
+  col.just = c("l", "r"), size = "tiny")
+@
+
+<<chunk.coverage.t3, message=FALSE, warning=FALSE, echo=FALSE, results="asis">>=
+load("/Users/olegsofrygin/GoogleDrive/Alex_SDR/sims/sims_final_04_20_17/sim1_results_t2.Rd")
+library("Hmisc")
+restab <- results[["results_cov"]]
+rownames(restab) <- unlist(strsplit(rownames(restab), "_cover"))
+cat("\n")
+latex(restab, file = "", where = "H", caption.loc = 'bottom',
+  caption = "Simulation scenario 1. Coverage of 95\\% CIs for $Q_0$, over 3 time points and $n$=500.",
+  booktabs = TRUE,landscape = FALSE,
+  #rowname = NULL,
+  col.just = c("l", "r"), size = "tiny")
+@
+
+\clearpage
+
+Data generating distribution for simulation scenario 1.
+
+<<chunk.simcode.t3, eval=FALSE>>=
+require("simcausal")
+D <- DAG.empty() +
+    node("L", t = 0, distr = "rnorm") +
+    node("A", t = 0, distr = "rbern", prob = plogis(L[0])) +
+    node("Y", t = 0, distr = "rconst", const = 0) +
+    node("L", t = 1, distr = "rnorm") +
+    node("A", t = 1, distr = "rbern", prob = plogis(L[1] + A[0])) +
+    node("Y", t = 1, distr = "rconst", const = 0) +
+    node("L", t = 2, distr = "rnorm", mean = L[0]*A[1] + A[0]*L[1] + L[1]*A[1]) +
+    node("A", t = 2, distr = "rbern", prob = plogis(L[2] + A[1])) +
+    node("Y", t = 2, distr = "rbern", prob = plogis(L[1]*A[2] + A[1]*L[2] + L[2]*A[2]))
+@
+
+Model specification for simulation scenario 1.
+
+<<chunk.Qg.t3, eval=FALSE, echo=TRUE>>=
+nsims <- 500
+nsamp <- 500
+tvals <- 2
+## g model (same across all time-points):
+gform.c <- "A ~ L + Atm1"
+gform.i <- "A ~ L"
+# Q models
+Qforms.c <- c("Qkplus1 ~ L",
+              "Qkplus1 ~ A0L1 + L0A0 + L + A + Atm1 + Ltm1",
+              "Qkplus1 ~ A0L1 + L0A0 + L + A + Atm1 + Ltm1")
+Qinteract.c <- list(c("A", "L"), c("A", "Ltm1"))
+Qforms.i <- c("Qkplus1 ~ L", "Qkplus1 ~ Atm1", "Qkplus1 ~ Atm1")
+Qinteract.i <- NULL
+
+@
+
+\clearpage
+\subsection{Demonstrating SDR property. Simulation scenario 2 with 5 time-points.}
+
+<<simscen.stats.t5, message=FALSE, warning=FALSE, echo=TRUE>>=
+load("/Users/olegsofrygin/GoogleDrive/Alex_SDR/sims/sims_final_04_20_17/sim2_results_t4.Rd")
+print(results[["res_name"]])
+@
+
+<<ggplot.MSE.t5, fig.pos="H", out.width=".7\\linewidth", message=FALSE, warning=FALSE, echo=FALSE, fig.width=8,fig.height=4.5, fig.cap="Relative MSE for $\\hat{Q}_1$ in simulation scenario 2 with 5 time points.">>=
+load("/Users/olegsofrygin/GoogleDrive/Alex_SDR/sims/sims_final_04_20_17/sim2_results_t4.Rd")
+restab <- results[["results_MSE"]]
+rownames(restab) <- unlist(strsplit(rownames(restab), "_mse"))
+restabMSE.t5 <- genrestab(restab, "Simulation 2", est_levels, scen_levels)
+pMSEt5 <- plotMSE(restabMSE.t5) + ylab("simulation scenario 2")
+pMSEt5
+@
+
+<<ggplot.bias.t5, fig.pos="H", out.width=".7\\linewidth", message=FALSE, warning=FALSE, echo=FALSE, fig.width=8,fig.height=4.5, fig.cap="Relative absolute bias for $\\hat{Q}_0$ in simulation scenario 2 with 5 time points.">>=
+load("/Users/olegsofrygin/GoogleDrive/Alex_SDR/sims/sims_final_04_20_17/sim2_results_t4.Rd")
+restab <- results[["results_bias"]]
+# results[["results_bias_mean"]]
+rownames(restab) <- unlist(strsplit(rownames(restab), "_bias"))
+restabBIAS.t5 <- genrestab(restab, "Simulation 2", est_levels, scen_levels)
+pbiast5 <- plotBIAS(restabBIAS.t5) + ylab("simulation scenario 2")
+pbiast5
+@
+
+<<ggplot.CIcov.CIlen.t5, fig.pos="H", out.width=".9\\linewidth", pdfcrop=TRUE, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Coverage (left panel) and mean length (right panel) of the two-sided 95\\% CIs for $Q_0$ in simulation scenario 2.">>=
+load("/Users/olegsofrygin/GoogleDrive/Alex_SDR/sims/sims_final_04_20_17/sim2_results_t4.Rd")
+restab <- results[["results_cov"]]
+rownames(restab) <- unlist(strsplit(rownames(restab), "_cover"))
+restabCIcov.t5 <- genrestab(restab, "Simulation 2", est_levels, scen_levels)
+restabCIcov.t5 <- restabCIcov.t5[Estimator!= "Direct Plugin"]
+# pCIt5 <- plotCI(restabCIcov.t5, jitter =.25)
+pCIt5 <- plotCI(restabCIcov.t5, jitter =.25, flip = TRUE)
+# pCIt5
+
+load("/Users/olegsofrygin/GoogleDrive/Alex_SDR/sims/sims_final_04_20_17/sim2_results_t4.Rd")
+restab <- results[["results_CIlen"]]
+rownames(restab) <- unlist(strsplit(rownames(restab), "_CIlen"))
+restabCIlen.t5 <- genrestab(restab, "Simulation 2", est_levels, scen_levels)
+restabCIlen.t5 <- restabCIlen.t5[Estimator!= "Direct Plugin"]
+restabCIlen.t5[, ("y") := 0]
+# restabCIlen.t5[, ("ymin") := -`Mean CI length` / 2]
+# restabCIlen.t5[, ("ymax") := +`Mean CI length` / 2]
+restabCIlen.t5[, ("ymin") := 0]
+restabCIlen.t5[, ("ymax") := `Mean CI length`]
+pCIlent5 <- plotCIlen(restabCIlen.t5) + xlab("simulation scenario 2")
+# pCIlent5
+
+pCIlent5 <- pCIlent5 + theme(legend.position = "top")
+legend.save <- get_legend(pCIlent5)
+pCIt5 <- pCIt5 + theme(legend.position = "none", axis.title.x = element_text(size = 8), axis.title.y = element_blank())
+pCIlent5 <- pCIlent5 + theme(legend.position = "none", axis.title.x = element_text(size = 8), axis.title.y = element_blank(), axis.text.y = element_blank()) + coord_flip()
+grid.arrange(legend.save, pCIt5, pCIlent5,
+              nrow = 2, ncol = 2,
+              layout_matrix = rbind(c(1,1), c(2,3)),
+              widths = c(0.55,0.45),
+              heights = unit(c(0.5, 10), "cm")
+              # heights = c(0.005, 0.1)
+              )
+@
+
+<<ggplot.all.t5, fig.pos="H", message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Results for simulation scenario 2. Top to bottom: MSE for estimation of $Q_1$, bias for estimation of $Q_0$ and 95\\% CI coverage for estimation of $Q_0$, over 5 time points and $n$=5,000.">>=
+  new_theme <- theme( # axis.title.x = element_blank(),
+                     axis.title.y = element_text(size = 8),
+                     axis.title.x = element_text(size = 8),
+                     plot.margin = unit(c(0, 0, 0.5, 0), "lines"),
+                     legend.position="top")
+  pMSEt5 <- pMSEt5 + new_theme
+  pbiast5 <- pbiast5 + new_theme
+  pCIt5 <- pCIt5 + new_theme
+  legend.save <- get_legend(pMSEt5)
+  pMSEt5 <- pMSEt5 + theme(legend.position = "none")
+  pbiast5 <- pbiast5 + theme(legend.position = "none")
+  pCIt5 <- pCIt5 + theme(legend.position = "none")
+@
+
+\clearpage
+
+<<chunk.bias.t5, fig.pos="H", message=FALSE, warning=FALSE, echo=FALSE, results="asis">>=
+load("/Users/olegsofrygin/GoogleDrive/Alex_SDR/sims/sims_final_04_20_17/sim2_results_t4.Rd")
+library("Hmisc")
+restab <- results[["results_bias"]]
+rownames(restab) <- unlist(strsplit(rownames(restab), "_bias"))
+cat("\n")
+latex(restab, file = "", where = "H", caption.loc = 'bottom',
+  caption = "Simulation scenario 2. Relative absolute bias for estimation of $Q_0$, over 5 time points and $n$=5,000.",
+  label = 'tab1',booktabs = TRUE,landscape = FALSE,
+  #rowname = NULL,
+  col.just = c("l", "r"), size = "tiny")
+@
+
+<<chunk.MSE.t5, fig.pos="H", message=FALSE, warning=FALSE, echo=FALSE, results="asis">>=
+load("/Users/olegsofrygin/GoogleDrive/Alex_SDR/sims/sims_final_04_20_17/sim2_results_t4.Rd")
+library("Hmisc")
+restab <- results[["results_MSE"]]
+rownames(restab) <- unlist(strsplit(rownames(restab), "_mse"))
+cat("\n")
+latex(restab, file = "", where = "H", caption.loc = 'bottom',
+  caption = "Simulation scenario 2. Relative MSE for estimation of $Q_1$, over 5 time points and $n$=5,000.",
+  label = 'tab2',booktabs = TRUE,landscape = FALSE,
+  #rowname = NULL,
+  col.just = c("l", "r"), size = "tiny")
+@
+
+<<chunk.coverage.t5, fig.pos="H", message=FALSE, warning=FALSE, echo=FALSE, results="asis">>=
+load("/Users/olegsofrygin/GoogleDrive/Alex_SDR/sims/sims_final_04_20_17/sim2_results_t4.Rd")
+library("Hmisc")
+restab <- results[["results_cov"]]
+rownames(restab) <- unlist(strsplit(rownames(restab), "_cover"))
+cat("\n")
+latex(restab, file = "", where = "H", caption.loc = 'bottom',
+  caption = "Simulation scenario 2. Coverage of 95\\% CIs for $Q_0$, over 5 time points and $n$=5,000.",
+  booktabs = TRUE,landscape = FALSE,
+  #rowname = NULL,
+  col.just = c("l", "r"), size = "tiny")
+@
+
+\clearpage
+
+Data generating distribution for simulation scenario 2.
+
+<<chunk.simcode.t5, eval=FALSE, echo=TRUE>>=
+nsims <- 500
+nsamp <- 5000
+tvals <- 4
+require("simcausal")
+D <- DAG.empty() +
+    node("UL",    t = 0, distr = "rnorm") +
+    node("W",     t = 0, distr = "rnorm", mean = 0) +
+    node("L",     t = 0, distr = "rconst", const = abs(UL[t])) +
+    node("phiRsk", t = 0, distr = "rconst", const = L[0]) +
+    node("hiRsk", t = 0, distr = "rconst", const = plogis(phiRsk[t]) > 0.8) +
+    node("A",     t = 0, distr = "rbern", prob = plogis(L[0])) +
+    node("Y",     t = 0, distr = "rconst", const = 0) +
+
+    node("UL",t = 1, distr = "rnorm") +
+    node("L", t = 1, distr = "rconst", const = abs(UL[t])) +
+    node("phiRsk", t = 1, distr = "rconst", const = -2 + 0.5*L[t-1] + 0.5*2*L[t]) +
+    node("hiRsk", t = 1, distr = "rconst", const = plogis(phiRsk[t]) > 0.9) +
+    node("A", t = 1, distr = "rbern", prob = A[t-1]*plogis(1.7 - 2.0*hiRsk[t])) +
+    node("Y", t = 1, distr = "rbern",
+      prob = plogis(-3 + 0.5*L[t-1]*A[t] + 0.5*A[t-1]*L[t] + 0.5*L[t]*A[t])) +
+
+    node("UL",t = 2, distr = "rnorm", mean = A[0]*L[1] + L[1]*A[1]) +
+    node("L", t = 2, distr = "rconst", const = abs(UL[t])) +
+    node("phiRsk", t = 2, distr = "rconst", const = -2 + 0.5*L[t-1] + 0.5*2*L[t]) +
+    node("hiRsk", t = 2, distr = "rconst", const = plogis(phiRsk[t]) > 0.85) +
+    node("A", t = 2, distr = "rbern", prob = A[t-1]*plogis(1.7 - 2.0*hiRsk[t])) +
+    node("Y", t = 2, distr = "rbern",
+      prob = plogis(-3*Y[t-1] + 0.5*L[t-1]*A[t] + 0.5*A[t-1]*L[t] + 0.5*L[t]*A[t])) +
+
+    node("UL",t = 3, distr = "rnorm", mean = L[1] * A[t-1] + A[1]*L[t-1] + L[t-1]*A[t-1]) +
+    node("L", t = 3, distr = "rconst", const = abs(UL[t])) +
+    node("phiRsk", t = 3, distr = "rconst", const = -2 + 0.5*L[t-1] + 0.5*2*L[t]) +
+    node("hiRsk", t = 3, distr = "rconst", const = plogis(phiRsk[t]) > 0.80) +
+    node("A", t = 3, distr = "rbern", prob = A[t-1]*plogis(1.7 - 2.0*hiRsk[t])) +
+    node("Y", t = 3, distr = "rbern",
+      prob = plogis(-3*Y[t-1] + 0.5*L[t-1]*A[t] + 0.5*A[t-1]*L[t] + 0.5*L[t]*A[t])) +
+
+    node("UL",t = 4, distr = "rnorm", mean = L[1] * A[t-1] + A[1]*L[t-1] + L[t-1]*A[t-1]) +
+    node("L", t = 4, distr = "rconst", const = abs(UL[t])) +
+    node("phiRsk", t = 4, distr = "rconst",
+      const = -1 + 0.25*L[t-1] + 0.25*2*L[t] - 0.1*L[t]*L[t-1] + 1.5*W[0]*L[t-1]) +
+    node("hiRsk", t = 4, distr = "rconst", const = plogis(phiRsk[t]) > 0.80) +
+    node("A", t = 4, distr = "rbern", prob = A[t-1]*plogis(2 - 2.0*hiRsk[t])) +
+    node("Y", t = 4, distr = "rbern",
+      prob = plogis(-1*Y[t-1] + A[t] + phiRsk[t]*A[t] + 0.20*A[t-1]*L[t]) )
+@
+
+\clearpage
+Model specification for simulation scenario 2.
+
+<<chunk.Qg.t5, eval=FALSE, echo=TRUE>>=
+## g model (same across all time-points):
+gform.c <- c(rep.int("A ~ hiRsk + L + Atm1 + Ytm1", tvals), "A ~ hiRsk + Atm1 + Ytm1")
+gform.i <- "A ~ 1"
+
+## Q models:
+Qforms.c <- c("Qkplus1 ~ L + W",
+              "Qkplus1 ~ L + Ltm1 + A + Atm1 + Ytm1 + W",
+              "Qkplus1 ~ L + Ltm1 + Ltm2 + A + Atm1 + Atm2 + Ytm1 + W",
+              "Qkplus1 ~ L + Ltm1 + Ltm2 + A + Atm1 + Atm2 + Ytm1 + W",
+              "Qkplus1 ~ L + Ltm1 + A + Atm1 + Ytm1 + W"
+              )
+Qinteract.c <- NULL
+
+Qforms.i <- c("Qkplus1 ~ L + W",
+              "Qkplus1 ~ W",
+              "Qkplus1 ~ W",
+              "Qkplus1 ~ W",
+              "Qkplus1 ~ W")
+Qinteract.i <- NULL
+
+## g and Q model to demonstrate SDR property (only last g is correctly specified)
+gform.SDR <- c(rep.int("A ~ 1", tvals-1), "A ~ 1", "A ~ hiRsk + Atm1 + Ytm1")
+Qforms.SDR <- c("Qkplus1 ~ L + W",
+                "Qkplus1 ~ L + Ltm1 + A + Atm1 + Ytm1 + W",
+                "Qkplus1 ~ L + Ltm1 + A + Atm1 + Ytm1 + W",
+                "Qkplus1 ~ L + Ltm1 + A + Atm1 + Ytm1 + W",
+                "Qkplus1 ~ W")
+Qinteract.SDR <- NULL
+@
+
+\clearpage
+\subsection{Combined results for simulation scenarios 1 and 2.}
+
+<<simres.all.MSE, out.width=".65\\linewidth", fig.pos="H", message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Relative MSE for $\\hat{Q}_1$ for simulation scenario 1 (top panel) and simulation scenario 2 (bottom panel). Simulation 1 is based on longitudinal data with 3 time-points and $n$=500 observations. Simulation 2 is based on longitudinal data with 5 time-points and $n$=5,000 observations. The iTMLE and DR Transform typically outperform or perform comparably to both competitors.">>=
+  pMSE.combinet <- plotMSE(rbind(restabMSE.t3, restabMSE.t5), jitter = .2) +
+                   facet_grid(sim ~ ., scales = "free") + # , labeller = label_parsed
+                   theme( # axis.title.x = element_blank(),
+                     axis.title.y = element_text(size = 8),
+                     axis.title.x = element_text(size = 8),
+                     plot.margin = unit(c(0, 0, 0, 0), "lines"),
+                     legend.position="bottom")
+  pMSE.combinet
+@
+
+<<simres.all.BIAS, out.width=".65\\linewidth", fig.pos="H", message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Relative absolute bias for $\\hat{Q}_0$ for simulation scenario 1 (top panel) and simulation scenario 2 (bottom panel). Simulation 1 is based on longitudinal data with 3 time-points and $n$=500 observations. Simulation 2 is based on longitudinal data with 5 time-points and $n$=5,000 observations. The performance of LTMLE, iTMLE, and DR Transform is similar. The only exception for Simulation 1 is under \\textit{Qi.gc}, where DR Transform outperforms other methods. The only exceptions for Simulation 2 are for \\textit{Qc.gi}, where DR Transform outperforms other methods, and \\textit{QSDR.gSDR}, where both SDR methods outperform LTMLE.">>=
+  pBIAS.combinet <- plotBIAS(rbind(restabBIAS.t3, restabBIAS.t5), jitter = .2) +
+                    facet_grid(sim ~ ., scales = "free") + # , labeller = label_parsed
+                    theme( # axis.title.x = element_blank(),
+                     axis.title.y = element_text(size = 8),
+                     axis.title.x = element_text(size = 8),
+                     plot.margin = unit(c(0, 0, 0, 0), "lines"),
+                     legend.position="bottom")
+  pBIAS.combinet
+@
+
+<<simres.all.coverCIlen, out.width=".9\\linewidth", fig.pos="H", pdfcrop=TRUE, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Coverage (left panels) and mean length (right panels) of the two-sided 95\\% CIs for $Q_0$ in simulation scenario 1 (top panels) and simulation scenario 2 (bottom panels). Confidence interval coverage and width appear to be comparable between the two SDR methods and the LTMLE. The only exception is for the \\textit{QSDR.gSDR} scenario, where the LTMLE has roughly 10\\% coverage, whereas the SDR  approaches nearly achieve the nominal coverage level.">>=
+
+  pCIcov.combinet <- plotCI(rbind(restabCIcov.t3, restabCIcov.t5), jitter =.3) +
+                    facet_grid(sim ~ ., scales = "free") + # , labeller = label_parsed
+                    theme( # axis.title.x = element_blank(),
+                     axis.title.y = element_text(size = 8),
+                     axis.title.x = element_text(size = 8),
+                     plot.margin = unit(c(0, 0, .5, 0), "lines"),
+                     legend.position="bottom")
+  # pCIcov.combinet
+  pCIlen.combinet <- plotCIlen(rbind(restabCIlen.t3, restabCIlen.t5)) +
+                    facet_grid(sim ~ ., scales = "free") + # , labeller = label_parsed
+                    theme( # axis.title.x = element_blank(),
+                     axis.title.y = element_text(size = 8),
+                     axis.title.x = element_text(size = 8),
+                     plot.margin = unit(c(0, 0, .5, 0), "lines"),
+                     legend.position="bottom")
+  # pCIlen.combinet
+
+  pCIlen.combinet <- pCIlen.combinet + theme(legend.position = "bottom")
+  pCIcov.combinet <- pCIcov.combinet + theme(legend.position = "bottom")
+  legend.save <- get_legend(pCIlen.combinet)
+
+  pCIcov.combinet <- pCIcov.combinet + theme(legend.position = "none", axis.title.x = element_text(size = 8), axis.title.y = element_blank())
+  pCIlen.combinet <- pCIlen.combinet + theme(legend.position = "none", axis.title.x = element_text(size = 8), axis.title.y = element_blank(), axis.text.y = element_blank()) + coord_flip()
+  grid.arrange(pCIcov.combinet, pCIlen.combinet, legend.save,
+                nrow = 2, ncol = 2,
+                layout_matrix = rbind(c(1,2), c(3,3)),
+                widths = c(0.65,0.35),
+                heights = unit(c(12, 0.5), "cm"),
+                clip = "on"
+                # heights = c(0.005, 0.1)
+                )
+@
+
+\clearpage
+<<ggplot.all, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Top to bottom: MSE for estimation of $Q_1$, bias for estimation of $Q_0$ and 95\\% CI coverage for estimation of $Q_0$. Left plot: simulation scenario 1. Right plot: simulation scenario 2.">>=
+  new_theme <- theme(axis.title.y = element_blank())
+  pMSEt5 <- pMSEt5 + new_theme
+  pbiast5 <- pbiast5 + new_theme
+  pCIt5 <- pCIt5 + new_theme
+
+  grid.arrange(legend.save, # legend.save,
+               pMSEt3, pMSEt5,
+               pbiast3, pbiast5,
+               pCIt3, pCIt5,
+               nrow = 4, ncol = 2,
+               heights = c(2.9, 2.9, 2.0, 0.40),
+               widths = c(0.48,0.52),
+               layout_matrix = rbind(c(2,3), c(4, 5), c(6, 7), c(1,1))
+              )
+@
+
+
+
+
+\end{document}
